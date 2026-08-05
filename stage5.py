@@ -72,7 +72,7 @@ async def get_task(task_id: int):
         ).fetchone()
         if row:
             return row_to_task(row)
-    return JSONResponse(status_code=404, content={"error": f"Task {task_id} not found"})
+    return JSONResponse(status_code=404, content={"error": "Task not found"})
 
 
 @app.post("/tasks")
