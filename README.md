@@ -40,7 +40,7 @@ id | title         | done
 3  | Read book     | 0
 ```
 
-![SQLite database viewer](sqlite_exploring.png)
+![SQLite database viewer](sqlLite_exploring.png)
 
 ## Install & Run
 
@@ -73,7 +73,7 @@ Once running, open:
 
 ## Database Viewer
 
-![Database viewer](task_content.png)
+![Database viewer](tasks_content.png)
 
 ## Endpoints
 
