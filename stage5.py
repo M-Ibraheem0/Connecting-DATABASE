@@ -1,5 +1,10 @@
+import sqlite3
+from pathlib import Path
+
 from fastapi import FastAPI, Body
 from fastapi.responses import JSONResponse, Response
+
+DATABASE_PATH = Path(__file__).resolve().parent / "tasks.db"
 
 app = FastAPI(
     title="Task API",
@@ -7,12 +12,39 @@ app = FastAPI(
     description="A simple task API with Swagger UI documentation available at /docs",
 )
 
-# In-memory tasks
-tasks = [
-    {"id": 1, "title": "Buy milk", "done": False},
-    {"id": 2, "title": "Write tests", "done": True},
-    {"id": 3, "title": "Read book", "done": False},
-]
+
+def get_connection():
+    conn = sqlite3.connect(DATABASE_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def row_to_task(row):
+    return {"id": row["id"], "title": row["title"], "done": bool(row["done"]) }
+
+
+def initialize_database():
+    DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with get_connection() as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY, title TEXT NOT NULL, done BOOLEAN NOT NULL)"
+        )
+        count = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+        if count == 0:
+            conn.executemany(
+                "INSERT INTO tasks (title, done) VALUES (?, ?)",
+                [
+                    ("Buy milk", 0),
+                    ("Write tests", 1),
+                    ("Read book", 0),
+                ],
+            )
+            conn.commit()
+
+
+@app.on_event("startup")
+async def on_startup():
+    initialize_database()
 
 
 @app.get("/", status_code=200)
@@ -27,14 +59,19 @@ async def health():
 
 @app.get("/tasks", status_code=200)
 async def list_tasks():
-    return tasks
+    with get_connection() as conn:
+        rows = conn.execute("SELECT id, title, done FROM tasks").fetchall()
+        return [row_to_task(row) for row in rows]
 
 
 @app.get("/tasks/{task_id}")
 async def get_task(task_id: int):
-    for t in tasks:
-        if t["id"] == task_id:
-            return t
+    with get_connection() as conn:
+        row = conn.execute(
+            "SELECT id, title, done FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if row:
+            return row_to_task(row)
     return JSONResponse(status_code=404, content={"error": f"Task {task_id} not found"})
 
 
@@ -44,10 +81,17 @@ async def create_task(payload: dict = Body(...)):
     if not title or not isinstance(title, str) or title.strip() == "":
         return JSONResponse(status_code=400, content={"error": "title is required"})
 
-    next_id = max((t["id"] for t in tasks), default=0) + 1
-    new_task = {"id": next_id, "title": title.strip(), "done": False}
-    tasks.append(new_task)
-    return JSONResponse(status_code=201, content=new_task)
+    with get_connection() as conn:
+        cursor = conn.execute(
+            "INSERT INTO tasks (title, done) VALUES (?, ?)",
+            (title.strip(), 0),
+        )
+        conn.commit()
+        task_id = cursor.lastrowid
+        row = conn.execute(
+            "SELECT id, title, done FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        return JSONResponse(status_code=201, content=row_to_task(row))
 
 
 @app.put("/tasks/{task_id}")
@@ -68,26 +112,40 @@ async def update_task(task_id: int, payload: dict = Body(...)):
     if "done" in payload and not isinstance(done, bool):
         return JSONResponse(status_code=400, content={"error": "done must be true or false"})
 
-    for idx, t in enumerate(tasks):
-        if t["id"] == task_id:
-            updated_task = t.copy()
-            if title is not None:
-                updated_task["title"] = title.strip()
-            if "done" in payload:
-                updated_task["done"] = done
-            tasks[idx] = updated_task
-            return updated_task
+    updates = []
+    params = []
+    if title is not None:
+        updates.append("title = ?")
+        params.append(title.strip())
+    if "done" in payload:
+        updates.append("done = ?")
+        params.append(int(done))
 
-    return JSONResponse(status_code=404, content={"error": f"Task {task_id} not found"})
+    if not updates:
+        return JSONResponse(status_code=400, content={"error": "request body must include title and/or done"})
+
+    params.append(task_id)
+    with get_connection() as conn:
+        cursor = conn.execute(
+            f"UPDATE tasks SET {', '.join(updates)} WHERE id = ?", tuple(params)
+        )
+        conn.commit()
+        if cursor.rowcount == 0:
+            return JSONResponse(status_code=404, content={"error": f"Task {task_id} not found"})
+        row = conn.execute(
+            "SELECT id, title, done FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        return row_to_task(row)
 
 
 @app.delete("/tasks/{task_id}", status_code=204)
 async def delete_task(task_id: int):
-    for idx, t in enumerate(tasks):
-        if t["id"] == task_id:
-            tasks.pop(idx)
-            return Response(status_code=204)
-    return JSONResponse(status_code=404, content={"error": f"Task {task_id} not found"})
+    with get_connection() as conn:
+        cursor = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        conn.commit()
+        if cursor.rowcount == 0:
+            return JSONResponse(status_code=404, content={"error": f"Task {task_id} not found"})
+    return Response(status_code=204)
 
 
 if __name__ == "__main__":
